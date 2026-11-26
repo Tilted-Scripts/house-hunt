@@ -303,8 +303,10 @@
 <div class="modal-backdrop" id="addModal">
   <div class="modal">
     <h2 style="margin-bottom:8px;">Add New Property</h2>
-    <p class="subtitle">Saved locally and included when you click "Copy Shareable Link".</p>
+    <p class="subtitle">Paste a Zillow link first to fill in the address and city. Saved locally and included when you click "Copy Shareable Link".</p>
     <form class="form-grid" onsubmit="addProperty(event)">
+      <input type="url" id="pZillow" placeholder="Paste Zillow link (fills address & city)" oninput="prefillFromZillow(this.value)" />
+      <div id="prefillNote" style="display:none; font-size:0.85rem;"></div>
       <input type="text" id="pAddress" placeholder="Street Address" required />
       <input type="text" id="pArea" placeholder="City / Area (e.g., Coral Springs)" required />
       <input type="number" id="pPrice" placeholder="List Price ($)" required />
@@ -313,7 +315,6 @@
       <input type="number" id="pHoa" placeholder="Monthly HOA ($)" value="0" required />
       <input type="text" id="pGarage" placeholder="Garage / Parking" required />
       <input type="text" id="pOutdoor" placeholder="Yard / Pool" required />
-      <input type="url" id="pZillow" placeholder="Zillow URL" />
       <input type="url" id="pRedfin" placeholder="Redfin URL (optional)" />
       <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
         <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
@@ -777,6 +778,7 @@ function toggleSelect(id) {
 }
 
 function render() {
+  syncAreaOptions();
   document.getElementById("dpVal").textContent = document.getElementById("dpSlider").value + "%";
   document.getElementById("rateVal").textContent = parseFloat(document.getElementById("rateSlider").value).toFixed(2) + "%";
   document.getElementById("insVal").textContent = "$" + parseInt(document.getElementById("insSlider").value).toLocaleString() + "/yr";
@@ -882,7 +884,79 @@ function renderCompare() {
 }
 
 function openModal() { document.getElementById("addModal").classList.add("open"); }
-function closeModal() { document.getElementById("addModal").classList.remove("open"); }
+function closeModal() {
+  document.getElementById("addModal").classList.remove("open");
+  document.getElementById("prefillNote").style.display = "none";
+}
+
+// --- Zillow link prefill: the address is in the link itself, e.g.
+// zillow.com/homedetails/9235-Saddlecreek-Dr-Boca-Raton-FL-33496/46632634_zpid/
+const KNOWN_CITIES = [
+  "West Palm Beach", "Palm Beach Gardens", "Royal Palm Beach", "Lake Worth Beach", "Southwest Ranches",
+  "Hallandale Beach", "Lighthouse Point", "North Lauderdale", "Lauderdale Lakes", "Lauderdale By The Sea",
+  "Fort Lauderdale", "Deerfield Beach", "Pompano Beach", "Delray Beach", "Boynton Beach", "Dania Beach",
+  "Pembroke Pines", "Coconut Creek", "Coral Springs", "Cooper City", "Boca Raton", "Lake Worth",
+  "Miami Gardens", "Miami Lakes", "Oakland Park", "Wilton Manors", "Hollywood", "Plantation", "Sunrise",
+  "Tamarac", "Margate", "Weston", "Parkland", "Davie", "Miramar", "Lauderhill", "Wellington", "Jupiter",
+  "Greenacres", "Miami"
+].map(c => c.toLowerCase().split(" ")).sort((a, b) => b.length - a.length);
+const STREET_SUFFIXES = new Set(["st", "ave", "dr", "way", "cir", "ter", "ct", "ln", "rd", "blvd", "pl", "trl",
+  "pkwy", "run", "pt", "path", "loop", "cv", "xing", "sq", "hwy", "rdg", "bnd", "walk", "row", "plz", "holw", "grv"]);
+const DIRECTIONS = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw"]);
+
+function parseZillowUrl(url) {
+  const m = /zillow\.com\/homedetails\/([^\/?#]+)/i.exec(url || "");
+  if (!m) return null;
+  const tokens = decodeURIComponent(m[1]).split("-").filter(Boolean);
+  let zip = "", state = "FL";
+  if (/^\d{5}$/.test(tokens[tokens.length - 1])) zip = tokens.pop();
+  if (/^[A-Za-z]{2}$/.test(tokens[tokens.length - 1])) state = tokens.pop().toUpperCase();
+  if (tokens.length < 2) return null;
+  const lower = tokens.map(t => t.toLowerCase());
+
+  // 1) Known South Florida city at the end of the slug
+  let cityLen = 0;
+  for (const parts of KNOWN_CITIES) {
+    const start = tokens.length - parts.length;
+    if (start >= 1 && parts.every((p, i) => lower[start + i] === p)) { cityLen = parts.length; break; }
+  }
+  // 2) Otherwise: the street ends at the last street suffix (plus an optional direction)
+  if (!cityLen) {
+    let end = -1;
+    for (let i = tokens.length - 2; i >= 1; i--) if (STREET_SUFFIXES.has(lower[i])) { end = i; break; }
+    if (end !== -1 && DIRECTIONS.has(lower[end + 1]) && end + 2 < tokens.length) end++;
+    cityLen = end === -1 ? 1 : tokens.length - 1 - end;
+  }
+  const street = tokens.slice(0, tokens.length - cityLen).join(" ");
+  const city = tokens.slice(tokens.length - cityLen).join(" ");
+  return { street, city, state, zip, address: `${street}, ${city}, ${state}${zip ? " " + zip : ""}` };
+}
+
+function prefillFromZillow(url) {
+  const note = document.getElementById("prefillNote");
+  url = url.trim();
+  const r = parseZillowUrl(url);
+  if (!r) {
+    note.style.display = url ? "block" : "none";
+    note.style.color = "var(--amber)";
+    note.textContent = "Not a Zillow home link — fill in the fields by hand.";
+    return;
+  }
+  document.getElementById("pAddress").value = r.address;
+  document.getElementById("pArea").value = r.city;
+  note.style.display = "block";
+  note.style.color = "var(--green)";
+  note.textContent = "✓ Address and city filled in. Now add price, year, specs, HOA, garage and yard from the listing.";
+}
+
+function syncAreaOptions() {
+  const sel = document.getElementById("areaFilter");
+  const current = sel.value;
+  const areas = [...new Set(properties.map(p => p.area))].sort();
+  sel.innerHTML = `<option value="ALL">All Areas (${properties.length} Listings)</option>` +
+    areas.map(a => `<option value="${a}">${a}</option>`).join("");
+  sel.value = areas.includes(current) ? current : "ALL";
+}
 
 function addProperty(e) {
   e.preventDefault();
